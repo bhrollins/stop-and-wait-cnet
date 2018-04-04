@@ -1,0 +1,12 @@
+compile = "flow_control.c"
+
+messagerate = 50ms
+probframecorrupt = 1
+
+host Sender {
+     wan to Receiver
+}
+
+host Receiver {
+     wan to Sender
+}
