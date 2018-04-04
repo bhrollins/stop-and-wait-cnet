@@ -52,4 +52,5 @@ EVENT_HANDLER(reboot_node) {
   if (nodeinfo.nodenumber == 0) {
     CHECK(CNET_enable_application(ALLNODES));
   }
+
 }
