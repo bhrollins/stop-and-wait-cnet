@@ -1,4 +1,5 @@
 #include <cnet.h>
+#include <string.h>
 
 typedef enum {DataSegment, AcknowledgementSegment} SegmentType;
 
@@ -15,105 +16,132 @@ typedef struct {
 } Segment;
 
 // Variables for the receiver
-uint32_t expected;
+uint32_t expected;        // expected ack
 Segment ack_buffer;
 CnetTimerID reack_buffer_timer;
 
 // Variables for the transmitter
+uint32_t transmitted;     // sequence number
 Segment send_buffer;
-uint32_t transmitted;
 CnetTimerID retransmit_timer;
 
+// -------------------------------------------------- send frame
 EVENT_HANDLER(send_frame) {
-  // TODO Implement transmitting a frame
 
-  // read application to send buffer
-  // send buffer sequence number = transmitted
-  // write physical
-  // disable application
+  int destination;
+  SegmentHeader header = {};
+  uint8_t buffer[MAX_MESSAGE_SIZE];
+  size_t length;
+
+  header.length = MAX_MESSAGE_SIZE;
+
+  // get frame from application layer
+  CHECK(CNET_read_application(&destination, &buffer, &(header.length)));
+  // disable application until ack is received:
+  CNET_disable_application(ALLNODES);
+
+  // start retransmit timer
+  CNET_start_timer(EV_TIMER0, 5000000, 0); // TODO find out what delay should be (currently set to 5 seconds)
+
+  header.type = DataSegment;
+  header.sequence_number = transmitted++;
+  // header.length = length;
+  header.crc = 0;
+
+  send_buffer.header = header;
+  memcpy(&send_buffer.data, (char *)buffer, header.length);
+
+  length = send_buffer.header.length + sizeof(SegmentHeader);
+  // compute crc
+  send_buffer.header.crc = CNET_crc32((unsigned char *)&send_buffer, length);
+
+  // send frame down the wire
+  printf("Sending data segment of size: %d. Seq number: %d.\n", length, transmitted); // TODO remove this
+  CHECK(CNET_write_physical(1, &send_buffer, &length));
+
 }
 
 EVENT_HANDLER(retransmit_timer_handler) {
-  // TODO Implement handling the retransmit timer going off
+  size_t length;
+
+  length = send_buffer.header.length + sizeof(SegmentHeader);
+  printf("Resending data segment of size %d. Seq number: %d.\n", length, transmitted);
+  CHECK(CNET_write_physical(1, &send_buffer, &length));
+  CNET_start_timer(EV_TIMER0, 5000000, 0);
 }
 
 EVENT_HANDLER(frame_arrived) {
-  // TODO Implement receiving a frame
-
-  // generate CRC for new package
-  // check new CRC with sent CRC
-  // if CRC matches, check with expected if it is the expected frame
-  // if CRC, and expected match, send ACKNOWLEGMENT
-
-  // ???? length = buffer.header.length + sizeof( SegmentHeader );
-
   Segment buffer;
+  int link;
+  size_t length;
+  length = MAX_MESSAGE_SIZE; // buffer.header.length + sizeof(SegmentHeader);
 
-  CHECK(
-    CNET_read_physical(
-      1, &buffer, &buffer.length
-    )
-  );
+  CHECK(CNET_read_physical(&link, &buffer, &length));
 
-  if (buffer.length == 0) {
-    // TODO check buffer.sequence_number to transmitted
-      // if true, transmitted ++
-      // send new packet
-      // reset resend_ack timer
+  uint32_t crc, post_crc;
+  crc = buffer.header.crc;
+  buffer.header.crc = 0;
+  post_crc = CNET_crc32((unsigned char *)&buffer, length);
 
-    if (buffer.sequence_number == transmitted) {
-      transmitted++;
-
-      // Get new packet
-      CHECK(
-        CNET_read_application(
-          &destination, &send_buffer, &(send_buffer.header.length)
-        )
-      );
-
-      send_buffer.sequence_number == transmitted;
-
-    }
+  if (post_crc != crc) {
+    printf("Checksums are not equal, allowing timeout.\n");
+    return; // do nothing -- let retransmit timer go off
   }
 
-  // Generate a new CRC code on the sent pack
-  // Check the generated CRC code against the CRC sent with package
-  if (buffer.crc == CNET_crc32(&ack_buffer, buffer.header.length + sizeof( SegmentHeader ))) {
+  switch (buffer.header.type) {
+    case DataSegment:
+      printf("Received data segment of size: %d.\n", length);
+      if (buffer.header.sequence_number == expected){ // otherwise let timeout occur
+        // stop the reack timer
+        CNET_stop_timer(EV_TIMER1);
 
-    // Check to see if package is expected
-    if (buffer.sequence_number == expected) {
-      expected++;
+        // send message to the application layer
+        length = buffer.header.length;
+        CHECK(CNET_write_application((unsigned char *)&buffer.data, &length));
+        expected++;
 
-      ack_buffer.sequence_number = buffer.sequence_number;
-      // set to 0 cause we're not sending data
-      ack_buffer.header.length = 0;
+        // send acknowledgment (store in ack_buffer until next expected data frame)
+        SegmentHeader header = {};
+        header.type = AcknowledgementSegment;
+        header.sequence_number = expected;
+        header.length = 0;
+        header.crc = 0;
 
-      // TODO Write to application
+        ack_buffer.header = header;
+        uint8_t nil[MAX_MESSAGE_SIZE] = {0};
+        memcpy(&ack_buffer.data, nil, header.length);
 
-      // TODO Send ACKNOWLEGMENT
-      CHECK(
-        CNET_write_physical(
-          1, &ack_buffer, &length
-        )
-      );
+        length = ack_buffer.header.length + sizeof(SegmentHeader);
+        ack_buffer.header.crc = CNET_crc32((unsigned char *)&ack_buffer, length);
+        printf("Sending acknowledgment of size: %d. Exp number: %d.\n", length, expected);
+        CHECK(CNET_write_physical(1, (char *)&ack_buffer, &length));
 
-      // TODO Reset reacknowledge_timer_handler
-    }
-    else {
-      printf("ERROR: Sequence_number %d received. Expected %d.\n", ack_buffer.sequence_number, expected);
-    }
+        // start reacknowledgement timer
+        CNET_start_timer(EV_TIMER1, 5000000, 0);
+      }
+      break;
+    case AcknowledgementSegment:
+      printf("Received acknowledgment segment of size: %d.\n", length);
+      if (buffer.header.sequence_number == transmitted){
+        printf("received acknowledgment, stopping timer\n");
+        CNET_stop_timer(EV_TIMER0);
+        CNET_enable_application(ALLNODES);
+      }
+      break;
+    default:
+      printf("Received an unsupported frame type.\n");
   }
-  else {
-    printf("ERROR: CRC check failed.\n");
-  }
+
 }
 
 EVENT_HANDLER(reacknowledge_timer_handler) {
-  // TODO Implement the reacknowledgement timer going off
+  size_t length;
+  length = ack_buffer.header.length + sizeof(SegmentHeader);
 
-  // TODO Send ACKNOWLEGMENT
-
-  // TODO Reset reacknowledge_timer_handler
+  printf("Resending acknowledgment of size: %d. Exp number: %d.\n", length, expected);
+  // resend acknowledgment
+  CHECK(CNET_write_physical(1, (char *)&ack_buffer, &length));
+  CNET_start_timer(EV_TIMER1, 5000000, 0); // restart timer
 }
 
 EVENT_HANDLER(reboot_node) {
