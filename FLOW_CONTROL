@@ -1,7 +1,7 @@
 compile = "flow_control.c"
 
 messagerate = 50ms
-probframecorrupt = 1
+//probframecorrupt = 1
 
 host Sender {
      wan to Receiver
