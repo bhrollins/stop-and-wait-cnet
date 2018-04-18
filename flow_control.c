@@ -51,11 +51,6 @@ EVENT_HANDLER(send_frame) {
   memcpy(&send_buffer.data, (char *)buffer, header.length);
 
   length = send_buffer.header.length + sizeof(SegmentHeader);
-  // compute crc
-  // printf("before crc first char \n");
-  // for (int i = length-1; i > 0; i--)
-  //   printf("%d ", send_buffer.data[i]);
-  // printf("\n");
   send_buffer.header.crc = CNET_crc32((unsigned char *)&send_buffer, length);
 
   // send frame down the wire
@@ -64,7 +59,7 @@ EVENT_HANDLER(send_frame) {
 
 }
 
-// ------------------------ retransmit timer handler ---------------------------
+// ------------------------ retransmit timer handler --------------------------
 EVENT_HANDLER(retransmit_timer_handler) {
   size_t length;
 
@@ -74,19 +69,19 @@ EVENT_HANDLER(retransmit_timer_handler) {
   retransmit_timer = CNET_start_timer(EV_TIMER0, 5000000, 0);
 }
 
-// ----------------------------- frame arrived ---------------------------------
+// ----------------------------- frame arrived --------------------------------
 EVENT_HANDLER(frame_arrived) {
   Segment buffer;
   int link;
   size_t length;
-  length = MAX_MESSAGE_SIZE; // buffer.header.length + sizeof(SegmentHeader);
+  length = MAX_MESSAGE_SIZE + sizeof(SegmentHeader);
 
   CHECK(CNET_read_physical(&link, &buffer, &length));
 
   uint32_t crc, post_crc;
   crc = buffer.header.crc;
   buffer.header.crc = 0;
-  post_crc = CNET_crc32((unsigned char *)&buffer, length); //buffer.header.length + sizeof(SegmentHeader));
+  post_crc = CNET_crc32((unsigned char *)&buffer, length);
 
   if (post_crc != crc) {
     printf("Checksums are not equal, allowing timeout.\n");
@@ -143,7 +138,7 @@ EVENT_HANDLER(frame_arrived) {
 
 }
 
-// ------------------- reacknowledgement timer handler -------------------------
+// ------------------- reacknowledgement timer handler ------------------------
 EVENT_HANDLER(reacknowledge_timer_handler) {
   size_t length;
   length = ack_buffer.header.length + sizeof(SegmentHeader);
@@ -151,10 +146,10 @@ EVENT_HANDLER(reacknowledge_timer_handler) {
   printf("Resending acknowledgment of size: %d. Exp number: %d.\n", length, expected);
   // resend acknowledgment
   CHECK(CNET_write_physical(1, &ack_buffer, &length));
-  reack_buffer_timer = CNET_start_timer(EV_TIMER1, 5000000, 0); // restart timer
+  reack_buffer_timer = CNET_start_timer(EV_TIMER1, 5000000, 0);
 }
 
-// ------------------------------- init op -------------------------------------
+// ------------------------------- init op ------------------------------------
 EVENT_HANDLER(reboot_node) {
   transmitted = 0;
   expected = 0;
